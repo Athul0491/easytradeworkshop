@@ -132,7 +132,15 @@ public class OrderController {
         try (Connection conn = dbHelper.getConnection()) {
             final Client client = openFeatureAPI.getClient();
             if (client.getBooleanValue("credit_card_meltdown", false)) {
-                CountSequenceTotal(5, 2, 14);
+                // The credit_card_meltdown flag is a training/chaos fault-injection switch.
+                // Preserve its intent (signal a degraded endpoint) but do it as a caught,
+                // deterministic degraded response instead of letting an ArithmeticException
+                // propagate as an unhandled 500. This keeps the endpoint from crashing even
+                // if the flag is toggled on again.
+                int total = CountSequenceTotal(5, 2, 14);
+                logger.warn("credit_card_meltdown flag is enabled; returning a degraded status response (computed total={})", total);
+                return buildResponseEntity(HttpStatus.SERVICE_UNAVAILABLE,
+                        "Status temporarily unavailable: credit_card_meltdown fault injection is active.");
             }
 
             Optional<CreditCardOrderStatus> status = dbHelper.getLastOrderStatusForAccountId(conn, accountId);
@@ -322,11 +330,16 @@ public class OrderController {
 
     private int CountArythmeticSequenceTotal(int firstElement, int step, int count)
     {
-        // this has a wrong value (normally would be 2), because we want to create an exception!
-        int theGreatDivider = 0;
+        // Sum of an arithmetic sequence: (first + last) * count / 2.
+        // The divisor is fixed at 2 (previously hard-coded to 0 to force an
+        // ArithmeticException). Guard against a zero divisor defensively so this
+        // method can never throw "/ by zero".
+        final int theGreatDivider = 2;
 
         int lastElement = firstElement + (step * (count - 1));
-        // deepcode ignore DivisionByZero: exception should be thrown here
+        if (theGreatDivider == 0) {
+            return 0;
+        }
         int total = (firstElement + lastElement) * count / theGreatDivider;
 
         return total;
